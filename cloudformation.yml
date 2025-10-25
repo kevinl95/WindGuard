@@ -7,6 +7,8 @@ Parameters:
   TPLinkEmail:
     Type: String
     Description: TP-Link account email for Kasa Cloud API.
+    AllowedPattern: "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$"
+    ConstraintDescription: "Must be a valid email address"
   TPLinkPassword:
     Type: String
     Description: TP-Link account password.
@@ -27,19 +29,31 @@ Parameters:
   WindOffThreshold:
     Type: Number
     Default: 20
+    MinValue: 1
+    MaxValue: 100
     Description: Wind speed (mph) above which the plug should turn off.
+    ConstraintDescription: "Must be between 1 and 100 mph"
   WindOnThreshold:
     Type: Number
     Default: 10
+    MinValue: 1
+    MaxValue: 99
     Description: Wind speed (mph) below which the plug should turn back on.
+    ConstraintDescription: "Must be between 1 and 99 mph (and less than WindOffThreshold)"
   OnStartHour:
     Type: Number
     Default: 17
+    MinValue: 0
+    MaxValue: 23
     Description: Hour of day (24h) when the plug schedule starts.
+    ConstraintDescription: "Must be between 0 and 23 (24-hour format)"
   OnEndHour:
     Type: Number
     Default: 22
+    MinValue: 0
+    MaxValue: 23
     Description: Hour of day (24h) when the plug schedule ends.
+    ConstraintDescription: "Must be between 0 and 23 (24-hour format)"
   NotifyEmail:
     Type: String
     Default: ""
