@@ -71,12 +71,15 @@ Click the "Launch Stack" button above and fill in the required parameters.
 ## Cost
 
 WindGuard is designed to be cost-effective:
-- **Lambda**: ~8,640 invocations/month (free tier covers 1M requests)
-- **Secrets Manager**: ~$0.40/month for credential storage
-- **SNS**: Minimal cost for notifications
-- **EventBridge**: Free for standard rules
+- **Lambda**: ~8,640 invocations/month (free tier covers 1M requests) = FREE
+- **Secrets Manager**: Credential storage = ~$0.40/month
+- **DynamoDB**: State tracking (~8,640 reads, ~100 writes/month) = ~$0.01/month
+- **SNS**: Notifications (50-100 messages/month) = ~$0.0001/month
+- **EventBridge**: Standard rule = FREE
 
-Total estimated cost: Under $1/month
+**Total estimated cost: ~$0.41/month (~$5/year)**
+
+This is less than the cost of a single coffee for a full year of automated decoration protection!
 
 ## Troubleshooting
 

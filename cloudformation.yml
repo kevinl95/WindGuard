@@ -84,6 +84,19 @@ Resources:
           "openweather_api_key": "${OpenWeatherApiKey}"
         }
 
+  # --- DynamoDB State Table ---
+  WindGuardStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AWS::StackName}-state"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
   # --- SNS Topic ---
   WindGuardSNSTopic:
     Type: AWS::SNS::Topic
@@ -136,6 +149,15 @@ Resources:
               - Effect: Allow
                 Action: sns:Publish
                 Resource: !Ref WindGuardSNSTopic
+        - PolicyName: windguard-dynamodb
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource: !GetAtt WindGuardStateTable.Arn
 
   # --- Lambda Function (inline code) ---
   WindGuardFunction:
@@ -157,6 +179,7 @@ Resources:
           ON_END: !Ref OnEndHour
           SNS_TOPIC_ARN: !Ref WindGuardSNSTopic
           TIMEZONE: !Ref TimeZone
+          STATE_TABLE: !Ref WindGuardStateTable
       Code:
         ZipFile: |
           import json, os, boto3, datetime
@@ -201,23 +224,53 @@ Resources:
               creds = get_secret()
               base = "https://wap.tplinkcloud.com"
               
-              # Login to get token
-              login_data = {
-                  "method": "login",
-                  "params": {
-                      "appType": "Kasa_Android",
-                      "cloudUserName": creds["email"],
-                      "cloudPassword": creds["password"],
-                      "terminalUUID": "windguard"
+              # Try Tapo app type first, fallback to Kasa if needed
+              login_attempts = [
+                  {
+                      "method": "login",
+                      "params": {
+                          "appType": "Tapo_Android",
+                          "cloudUserName": creds["email"],
+                          "cloudPassword": creds["password"],
+                          "terminalUUID": "windguard-" + str(hash(creds["email"]))[-8:]
+                      }
+                  },
+                  {
+                      "method": "login", 
+                      "params": {
+                          "appType": "Kasa_Android",
+                          "cloudUserName": creds["email"],
+                          "cloudPassword": creds["password"], 
+                          "terminalUUID": "windguard-" + str(hash(creds["email"]))[-8:]
+                      }
                   }
-              }
-              login_response = make_http_request(base, login_data)
+              ]
+              
+              login_response = None
+              for login_data in login_attempts:
+                  try:
+                      login_response = make_http_request(base, login_data)
+                      if "result" in login_response:
+                          break
+                  except:
+                      continue
+              # Check for login errors
+              if not login_response or "result" not in login_response:
+                  error_msg = login_response.get("error_code", "Unknown error")
+                  raise Exception(f"TP-Link login failed: {error_msg}. Response: {login_response}")
+              
               token = login_response["result"]["token"]
               
               # Get device list
               devices_response = make_http_request(f"{base}?token={token}", {"method": "getDeviceList"})
+              if "result" not in devices_response:
+                  raise Exception(f"Failed to get device list: {devices_response}")
+              
               devices = devices_response["result"]["deviceList"]
-              device = next(d for d in devices if d["alias"] == os.environ["TPLINK_DEVICE_ALIAS"])
+              device = next((d for d in devices if d["alias"] == os.environ["TPLINK_DEVICE_ALIAS"]), None)
+              if not device:
+                  device_names = [d["alias"] for d in devices]
+                  raise Exception(f"Device '{os.environ['TPLINK_DEVICE_ALIAS']}' not found. Available devices: {device_names}")
               
               # Send command to device
               command_data = {
@@ -236,30 +289,71 @@ Resources:
               user_tz = ZoneInfo(tz_name)
               return datetime.datetime.now(user_tz).hour
 
-          def handler(event, context):
-              # Get current time in user's timezone
-              now = get_local_hour()
-              lat, lon = os.environ["LAT"], os.environ["LON"]
-              creds = get_secret()
-              wind = get_wind_speed(lat, lon, creds["openweather_api_key"])
-              off_th = float(os.environ["WIND_OFF_THRESHOLD"])
-              on_th = float(os.environ["WIND_ON_THRESHOLD"])
-              start = int(os.environ["ON_START"])
-              end = int(os.environ["ON_END"])
-              
-              should_be_on = start <= now <= end
-              msg = None
+          def get_last_state():
+              """Get the last known plug state from DynamoDB"""
+              try:
+                  dynamodb = boto3.client('dynamodb')
+                  response = dynamodb.get_item(
+                      TableName=os.environ['STATE_TABLE'],
+                      Key={'id': {'S': 'windguard-state'}}
+                  )
+                  if 'Item' in response:
+                      return response['Item']['state']['S']
+                  return None
+              except Exception:
+                  return None
 
-              if wind > off_th and should_be_on:
-                  tplink_request("set_relay_state", {"state": 0})
-                  msg = f"⚠️ WindGuard turned OFF plug (wind={wind:.1f} mph)"
-              elif wind < on_th and should_be_on:
-                  tplink_request("set_relay_state", {"state": 1})
-                  msg = f"✅ WindGuard re-enabled plug (wind={wind:.1f} mph)"
+          def save_state(state):
+              """Save current plug state to DynamoDB"""
+              try:
+                  dynamodb = boto3.client('dynamodb')
+                  dynamodb.put_item(
+                      TableName=os.environ['STATE_TABLE'],
+                      Item={
+                          'id': {'S': 'windguard-state'},
+                          'state': {'S': state},
+                          'timestamp': {'S': str(datetime.datetime.utcnow())}
+                      }
+                  )
+              except Exception as e:
+                  print(f"Failed to save state: {e}")
+
+          def handler(event, context):
+              try:
+                  # Get current time in user's timezone
+                  now = get_local_hour()
+                  lat, lon = os.environ["LAT"], os.environ["LON"]
+                  creds = get_secret()
+                  wind = get_wind_speed(lat, lon, creds["openweather_api_key"])
+                  off_th = float(os.environ["WIND_OFF_THRESHOLD"])
+                  on_th = float(os.environ["WIND_ON_THRESHOLD"])
+                  start = int(os.environ["ON_START"])
+                  end = int(os.environ["ON_END"])
+                  
+                  should_be_on = start <= now <= end
+                  last_action = get_last_state()
+                  msg = None
+
+                  if wind > off_th and should_be_on:
+                      if last_action != "OFF":
+                          tplink_request("set_relay_state", {"state": 0})
+                          save_state("OFF")
+                          msg = f"⚠️ WindGuard turned OFF plug (wind={wind:.1f} mph)"
+                  elif wind < on_th and should_be_on:
+                      if last_action != "ON":
+                          tplink_request("set_relay_state", {"state": 1})
+                          save_state("ON")
+                          msg = f"✅ WindGuard re-enabled plug (wind={wind:.1f} mph)"
+                  
+                  if msg:
+                      notify(msg)
+                  return {"statusCode": 200, "body": json.dumps({"wind": wind, "last_action": last_action})}
               
-              if msg:
-                  notify(msg)
-              return {"statusCode": 200, "body": json.dumps({"wind": wind})}
+              except Exception as e:
+                  error_msg = f"WindGuard error: {str(e)}"
+                  print(error_msg)  # CloudWatch logs
+                  notify(f"🚨 {error_msg}")
+                  return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
 
   # --- EventBridge Schedule ---
   WindGuardSchedule:
@@ -286,3 +380,5 @@ Outputs:
     Value: !Ref WindGuardSNSTopic
   SecretArn:
     Value: !Ref WindGuardSecret
+  StateTableName:
+    Value: !Ref WindGuardStateTable
