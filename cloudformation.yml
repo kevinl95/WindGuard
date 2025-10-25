@@ -53,12 +53,13 @@ Resources:
   WindGuardSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: windguard-tplink-credentials
-      Description: TP-Link Kasa credentials for WindGuard
+      Name: windguard-credentials
+      Description: TP-Link Kasa credentials and API keys for WindGuard
       SecretString: !Sub |
         {
           "email": "${TPLinkEmail}",
-          "password": "${TPLinkPassword}"
+          "password": "${TPLinkPassword}",
+          "openweather_api_key": "${OpenWeatherApiKey}"
         }
 
   # --- SNS Topic ---
@@ -126,7 +127,6 @@ Resources:
         Variables:
           SECRET_ARN: !Ref WindGuardSecret
           TPLINK_DEVICE_ALIAS: !Ref TPLinkDeviceAlias
-          OPENWEATHER_API_KEY: !Ref OpenWeatherApiKey
           LAT: !Ref Latitude
           LON: !Ref Longitude
           WIND_OFF_THRESHOLD: !Ref WindOffThreshold
@@ -185,7 +185,8 @@ Resources:
           def handler(event, context):
               now = datetime.datetime.utcnow().hour
               lat, lon = os.environ["LAT"], os.environ["LON"]
-              wind = get_wind_speed(lat, lon, os.environ["OPENWEATHER_API_KEY"])
+              creds = get_secret()
+              wind = get_wind_speed(lat, lon, creds["openweather_api_key"])
               off_th = float(os.environ["WIND_OFF_THRESHOLD"])
               on_th = float(os.environ["WIND_ON_THRESHOLD"])
               start = int(os.environ["ON_START"])
