@@ -1,0 +1,232 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  WindGuard – Automatically control a TP-Link Kasa outdoor plug based on wind speed.
+  Uses AWS Secrets Manager for credentials, SNS for notifications, and inline Lambda code.
+
+Parameters:
+  TPLinkEmail:
+    Type: String
+    Description: TP-Link account email for Kasa Cloud API.
+  TPLinkPassword:
+    Type: String
+    Description: TP-Link account password.
+    NoEcho: true
+  TPLinkDeviceAlias:
+    Type: String
+    Description: Alias (friendly name) of the Kasa plug to control.
+  OpenWeatherApiKey:
+    Type: String
+    Description: OpenWeatherMap API key.
+    NoEcho: true
+  Latitude:
+    Type: Number
+    Description: Latitude of the plug’s location.
+  Longitude:
+    Type: Number
+    Description: Longitude of the plug’s location.
+  WindOffThreshold:
+    Type: Number
+    Default: 20
+    Description: Wind speed (mph) above which the plug should turn off.
+  WindOnThreshold:
+    Type: Number
+    Default: 10
+    Description: Wind speed (mph) below which the plug should turn back on.
+  OnStartHour:
+    Type: Number
+    Default: 17
+    Description: Hour of day (24h) when the plug schedule starts.
+  OnEndHour:
+    Type: Number
+    Default: 22
+    Description: Hour of day (24h) when the plug schedule ends.
+  NotifyEmail:
+    Type: String
+    Default: ""
+    Description: Optional email to receive notifications when plug toggles.
+
+Conditions:
+  HasNotifyEmail: !Not [!Equals [!Ref NotifyEmail, ""]]
+
+Resources:
+  # --- Secrets Manager Secret ---
+  WindGuardSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: windguard-tplink-credentials
+      Description: TP-Link Kasa credentials for WindGuard
+      SecretString: !Sub |
+        {
+          "email": "${TPLinkEmail}",
+          "password": "${TPLinkPassword}"
+        }
+
+  # --- SNS Topic ---
+  WindGuardSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: "WindGuard Notifications"
+
+  # Optional Email Subscription
+  WindGuardSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasNotifyEmail
+    Properties:
+      Protocol: email
+      Endpoint: !Ref NotifyEmail
+      TopicArn: !Ref WindGuardSNSTopic
+
+  # --- IAM Role for Lambda ---
+  WindGuardRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: windguard-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+        - PolicyName: windguard-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref WindGuardSecret
+        - PolicyName: windguard-sns
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref WindGuardSNSTopic
+
+  # --- Lambda Function (inline code) ---
+  WindGuardFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Handler: index.handler
+      Timeout: 60
+      Role: !GetAtt WindGuardRole.Arn
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref WindGuardSecret
+          TPLINK_DEVICE_ALIAS: !Ref TPLinkDeviceAlias
+          OPENWEATHER_API_KEY: !Ref OpenWeatherApiKey
+          LAT: !Ref Latitude
+          LON: !Ref Longitude
+          WIND_OFF_THRESHOLD: !Ref WindOffThreshold
+          WIND_ON_THRESHOLD: !Ref WindOnThreshold
+          ON_START: !Ref OnStartHour
+          ON_END: !Ref OnEndHour
+          SNS_TOPIC_ARN: !Ref WindGuardSNSTopic
+      Code:
+        ZipFile: |
+          import json, os, boto3, requests, datetime
+
+          def notify(msg):
+              topic = os.environ.get("SNS_TOPIC_ARN")
+              if not topic: return
+              boto3.client("sns").publish(
+                  TopicArn=topic,
+                  Subject="WindGuard Update",
+                  Message=msg
+              )
+
+          def get_secret():
+              arn = os.environ["SECRET_ARN"]
+              sm = boto3.client("secretsmanager")
+              secret = sm.get_secret_value(SecretId=arn)
+              return json.loads(secret["SecretString"])
+
+          def get_wind_speed(lat, lon, api_key):
+              url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=imperial"
+              r = requests.get(url, timeout=5)
+              return r.json()["wind"].get("speed", 0)
+
+          def tplink_request(method, params):
+              creds = get_secret()
+              base = "https://wap.tplinkcloud.com"
+              login = requests.post(base, json={
+                  "method": "login",
+                  "params": {
+                      "appType": "Kasa_Android",
+                      "cloudUserName": creds["email"],
+                      "cloudPassword": creds["password"],
+                      "terminalUUID": "windguard"
+                  }
+              }).json()
+              token = login["result"]["token"]
+              devices = requests.post(f"{base}?token={token}", json={"method": "getDeviceList"}).json()["result"]["deviceList"]
+              device = next(d for d in devices if d["alias"] == os.environ["TPLINK_DEVICE_ALIAS"])
+              req = {
+                  "method": "passthrough",
+                  "params": {
+                      "deviceId": device["deviceId"],
+                      "requestData": json.dumps({"system": {"set_relay_state": {"state": params["state"]}}})
+                  }
+              }
+              return requests.post(f"{base}?token={token}", json=req).status_code
+
+          def handler(event, context):
+              now = datetime.datetime.utcnow().hour
+              lat, lon = os.environ["LAT"], os.environ["LON"]
+              wind = get_wind_speed(lat, lon, os.environ["OPENWEATHER_API_KEY"])
+              off_th = float(os.environ["WIND_OFF_THRESHOLD"])
+              on_th = float(os.environ["WIND_ON_THRESHOLD"])
+              start = int(os.environ["ON_START"])
+              end = int(os.environ["ON_END"])
+              
+              should_be_on = start <= now <= end
+              msg = None
+
+              if wind > off_th and should_be_on:
+                  tplink_request("set_relay_state", {"state": 0})
+                  msg = f"⚠️ WindGuard turned OFF plug (wind={wind:.1f} mph)"
+              elif wind < on_th and should_be_on:
+                  tplink_request("set_relay_state", {"state": 1})
+                  msg = f"✅ WindGuard re-enabled plug (wind={wind:.1f} mph)"
+              
+              if msg:
+                  notify(msg)
+              return {"statusCode": 200, "body": json.dumps({"wind": wind})}
+
+  # --- EventBridge Schedule ---
+  WindGuardSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: rate(5 minutes)
+      Targets:
+        - Arn: !GetAtt WindGuardFunction.Arn
+          Id: WindGuardTarget
+
+  # --- Lambda Invoke Permission ---
+  WindGuardPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WindGuardFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt WindGuardSchedule.Arn
+
+Outputs:
+  LambdaFunctionName:
+    Value: !Ref WindGuardFunction
+  SNSTopicArn:
+    Value: !Ref WindGuardSNSTopic
+  SecretArn:
+    Value: !Ref WindGuardSecret
