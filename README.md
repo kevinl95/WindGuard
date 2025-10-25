@@ -1,5 +1,9 @@
 # WindGuard
 
+<div align="center">
+  <img src="assets/logo.png" alt="WindGuard Logo" width="200"/>
+</div>
+
 [![Lint CloudFormation Template](https://github.com/kevinl95/WindGuard/actions/workflows/main.yml/badge.svg)](https://github.com/kevinl95/WindGuard/actions/workflows/main.yml)
 
 Automatically protect your inflatable decorations from wind damage by controlling a TP-Link Kasa smart plug based on real-time wind speed data.
