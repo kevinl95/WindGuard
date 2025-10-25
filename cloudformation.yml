@@ -220,7 +220,8 @@ Resources:
               with urllib.request.urlopen(req, timeout=10) as response:
                   return json.loads(response.read())
 
-          def tplink_request(method, params):
+          def get_device_info():
+              """Get current device state and return device info + token"""
               creds = get_secret()
               base = "https://wap.tplinkcloud.com"
               
@@ -254,7 +255,7 @@ Resources:
                           break
                   except:
                       continue
-              # Check for login errors
+              
               if not login_response or "result" not in login_response:
                   error_msg = login_response.get("error_code", "Unknown error")
                   raise Exception(f"TP-Link login failed: {error_msg}. Response: {login_response}")
@@ -272,6 +273,21 @@ Resources:
                   device_names = [d["alias"] for d in devices]
                   raise Exception(f"Device '{os.environ['TPLINK_DEVICE_ALIAS']}' not found. Available devices: {device_names}")
               
+              # Get current device state
+              status_response = make_http_request(f"{base}?token={token}", {
+                  "method": "passthrough",
+                  "params": {
+                      "deviceId": device["deviceId"],
+                      "requestData": json.dumps({"system": {"get_sysinfo": {}}})
+                  }
+              })
+              
+              return device, token, status_response
+
+          def tplink_request(method, params):
+              device, token, _ = get_device_info()
+              base = "https://wap.tplinkcloud.com"
+              
               # Send command to device
               command_data = {
                   "method": "passthrough",
@@ -282,6 +298,18 @@ Resources:
               }
               make_http_request(f"{base}?token={token}", command_data)
               return 200  # Success
+
+          def get_current_plug_state():
+              """Get the actual current state of the plug"""
+              try:
+                  _, _, status_response = get_device_info()
+                  # Parse the response to get relay state
+                  response_data = json.loads(status_response["result"]["responseData"])
+                  relay_state = response_data["system"]["get_sysinfo"]["relay_state"]
+                  return "ON" if relay_state == 1 else "OFF"
+              except Exception as e:
+                  print(f"Failed to get plug state: {e}")
+                  return None
 
           def get_local_hour():
               """Get current hour in user's timezone"""
@@ -331,23 +359,30 @@ Resources:
                   end = int(os.environ["ON_END"])
                   
                   should_be_on = start <= now <= end
-                  last_action = get_last_state()
+                  current_state = get_current_plug_state()
+                  last_notified = get_last_state()
                   msg = None
 
                   if wind > off_th and should_be_on:
-                      if last_action != "OFF":
+                      # Always try to turn off if it's currently on
+                      if current_state == "ON":
                           tplink_request("set_relay_state", {"state": 0})
-                          save_state("OFF")
-                          msg = f"⚠️ WindGuard turned OFF plug (wind={wind:.1f} mph)"
+                          # Only notify if we haven't already notified about turning OFF
+                          if last_notified != "OFF":
+                              save_state("OFF")
+                              msg = f"⚠️ WindGuard turned OFF plug (wind={wind:.1f} mph)"
                   elif wind < on_th and should_be_on:
-                      if last_action != "ON":
+                      # Always try to turn on if it's currently off
+                      if current_state == "OFF":
                           tplink_request("set_relay_state", {"state": 1})
-                          save_state("ON")
-                          msg = f"✅ WindGuard re-enabled plug (wind={wind:.1f} mph)"
+                          # Only notify if we haven't already notified about turning ON
+                          if last_notified != "ON":
+                              save_state("ON")
+                              msg = f"✅ WindGuard re-enabled plug (wind={wind:.1f} mph)"
                   
                   if msg:
                       notify(msg)
-                  return {"statusCode": 200, "body": json.dumps({"wind": wind, "last_action": last_action})}
+                  return {"statusCode": 200, "body": json.dumps({"wind": wind, "current_state": current_state, "last_notified": last_notified})}
               
               except Exception as e:
                   error_msg = f"WindGuard error: {str(e)}"
