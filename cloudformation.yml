@@ -159,9 +159,11 @@ Resources:
           TIMEZONE: !Ref TimeZone
       Code:
         ZipFile: |
-          import json, os, boto3, requests, datetime
+          import json, os, boto3, datetime
           from datetime import timezone
           import pytz
+          import urllib.request
+          import urllib.parse
 
           def notify(msg):
               topic = os.environ.get("SNS_TOPIC_ARN")
@@ -180,13 +182,27 @@ Resources:
 
           def get_wind_speed(lat, lon, api_key):
               url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=imperial"
-              r = requests.get(url, timeout=5)
-              return r.json()["wind"].get("speed", 0)
+              with urllib.request.urlopen(url, timeout=5) as response:
+                  data = json.loads(response.read())
+              return data["wind"].get("speed", 0)
+
+          def make_http_request(url, data=None):
+              """Helper function for HTTP requests"""
+              if data:
+                  data = json.dumps(data).encode('utf-8')
+                  req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+              else:
+                  req = urllib.request.Request(url)
+              
+              with urllib.request.urlopen(req, timeout=10) as response:
+                  return json.loads(response.read())
 
           def tplink_request(method, params):
               creds = get_secret()
               base = "https://wap.tplinkcloud.com"
-              login = requests.post(base, json={
+              
+              # Login to get token
+              login_data = {
                   "method": "login",
                   "params": {
                       "appType": "Kasa_Android",
@@ -194,18 +210,25 @@ Resources:
                       "cloudPassword": creds["password"],
                       "terminalUUID": "windguard"
                   }
-              }).json()
-              token = login["result"]["token"]
-              devices = requests.post(f"{base}?token={token}", json={"method": "getDeviceList"}).json()["result"]["deviceList"]
+              }
+              login_response = make_http_request(base, login_data)
+              token = login_response["result"]["token"]
+              
+              # Get device list
+              devices_response = make_http_request(f"{base}?token={token}", {"method": "getDeviceList"})
+              devices = devices_response["result"]["deviceList"]
               device = next(d for d in devices if d["alias"] == os.environ["TPLINK_DEVICE_ALIAS"])
-              req = {
+              
+              # Send command to device
+              command_data = {
                   "method": "passthrough",
                   "params": {
                       "deviceId": device["deviceId"],
                       "requestData": json.dumps({"system": {"set_relay_state": {"state": params["state"]}}})
                   }
               }
-              return requests.post(f"{base}?token={token}", json=req).status_code
+              make_http_request(f"{base}?token={token}", command_data)
+              return 200  # Success
 
           def handler(event, context):
               # Get current time in user's timezone
