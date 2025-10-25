@@ -44,6 +44,12 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional email to receive notifications when plug toggles.
+  TimeZone:
+    Type: String
+    Default: "America/New_York"
+    Description: >
+      Timezone for schedule (e.g., America/New_York, America/Los_Angeles, 
+      Europe/London). See https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 
 Conditions:
   HasNotifyEmail: !Not [!Equals [!Ref NotifyEmail, ""]]
@@ -134,9 +140,12 @@ Resources:
           ON_START: !Ref OnStartHour
           ON_END: !Ref OnEndHour
           SNS_TOPIC_ARN: !Ref WindGuardSNSTopic
+          TIMEZONE: !Ref TimeZone
       Code:
         ZipFile: |
           import json, os, boto3, requests, datetime
+          from datetime import timezone
+          import pytz
 
           def notify(msg):
               topic = os.environ.get("SNS_TOPIC_ARN")
@@ -183,7 +192,9 @@ Resources:
               return requests.post(f"{base}?token={token}", json=req).status_code
 
           def handler(event, context):
-              now = datetime.datetime.utcnow().hour
+              # Get current time in user's timezone
+              user_tz = pytz.timezone(os.environ["TIMEZONE"])
+              now = datetime.datetime.now(user_tz).hour
               lat, lon = os.environ["LAT"], os.environ["LON"]
               creds = get_secret()
               wind = get_wind_speed(lat, lon, creds["openweather_api_key"])
