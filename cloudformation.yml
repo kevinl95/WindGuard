@@ -47,6 +47,8 @@ Parameters:
   TimeZone:
     Type: String
     Default: "America/New_York"
+    AllowedPattern: "^[A-Za-z_]+/[A-Za-z_]+$"
+    ConstraintDescription: "Must be a valid timezone (e.g., America/New_York, Europe/London)"
     Description: >
       Timezone for schedule (e.g., America/New_York, America/Los_Angeles, 
       Europe/London). See https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
