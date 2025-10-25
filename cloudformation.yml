@@ -22,10 +22,10 @@ Parameters:
     NoEcho: true
   Latitude:
     Type: Number
-    Description: Latitude of the plug’s location.
+    Description: Latitude of the plug's location.
   Longitude:
     Type: Number
-    Description: Longitude of the plug’s location.
+    Description: Longitude of the plug's location.
   WindOffThreshold:
     Type: Number
     Default: 20
@@ -141,7 +141,7 @@ Resources:
   WindGuardFunction:
     Type: AWS::Lambda::Function
     Properties:
-      Runtime: python3.11
+      Runtime: python3.12
       Handler: index.handler
       Timeout: 60
       Role: !GetAtt WindGuardRole.Arn
@@ -161,7 +161,7 @@ Resources:
         ZipFile: |
           import json, os, boto3, datetime
           from datetime import timezone
-          import pytz
+          from zoneinfo import ZoneInfo
           import urllib.request
           import urllib.parse
 
@@ -230,10 +230,15 @@ Resources:
               make_http_request(f"{base}?token={token}", command_data)
               return 200  # Success
 
+          def get_local_hour():
+              """Get current hour in user's timezone"""
+              tz_name = os.environ["TIMEZONE"]
+              user_tz = ZoneInfo(tz_name)
+              return datetime.datetime.now(user_tz).hour
+
           def handler(event, context):
               # Get current time in user's timezone
-              user_tz = pytz.timezone(os.environ["TIMEZONE"])
-              now = datetime.datetime.now(user_tz).hour
+              now = get_local_hour()
               lat, lon = os.environ["LAT"], os.environ["LON"]
               creds = get_secret()
               wind = get_wind_speed(lat, lon, creds["openweather_api_key"])

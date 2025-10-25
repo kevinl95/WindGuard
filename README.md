@@ -30,7 +30,7 @@ WindGuard monitors local wind conditions using the [OpenWeatherMap](https://open
 
 ### 1. Deploy the Stack
 
-Click the deploy button above and fill in the required parameters.
+Click the "Launch Stack" button above and fill in the required parameters.
 
 ### 2. Required Parameters
 
