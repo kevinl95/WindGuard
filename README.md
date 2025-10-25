@@ -8,7 +8,7 @@
 
 Automatically protect your inflatable decorations from wind damage by controlling a TP-Link Kasa smart plug based on real-time wind speed data.
 
-[![Deploy to AWS](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=WindGuard&templateURL=https://your-bucket.s3.amazonaws.com/windguard/cloudformation.yml)
+[![Deploy to AWS](https://s3.amazonaws.com/cloudformation-examples/cloudformation-launch-stack.png)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=WindGuard&templateURL=https://windguard.s3.us-east-1.amazonaws.com/cloudformation.yml)
 
 ## Overview
 
