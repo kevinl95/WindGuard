@@ -20,7 +20,7 @@ WindGuard monitors local wind conditions using the [OpenWeatherMap](https://open
 - **Configurable thresholds**: Set different wind speeds for turning decorations off and back on
 - **Time-based operation**: Only active during specified hours (default: 5 PM - 10 PM)
 - **Secure credential storage**: TP-Link and API credentials stored in AWS Secrets Manager
-- **SMS/Email notifications**: Optional alerts when the plug state changes
+- **Email notifications**: Optional alerts when the plug state changes
 - **Serverless architecture**: Cost-effective with AWS Lambda, triggered every 5 minutes
 - **Easy deployment**: Single CloudFormation template
 
